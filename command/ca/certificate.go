@@ -106,6 +106,11 @@ $ step ca certificate joe@example.com joe.crt joe.key --issuer Google --console
 Request a new certificate with an RSA public key (default is ECDSA256):
 '''
 $ step ca certificate foo.internal foo.crt foo.key --kty RSA --size 4096
+
+Request a new certificate using the step CA ACME server and standalone mode:
+'''
+$ step ca certificate foobar foo.crt foo.key --acme --standalone \
+--san foo.internal --san bar.internal
 '''`,
 		Flags: []cli.Flag{
 			consoleFlag,
@@ -809,7 +814,7 @@ func acmeFlow(ctx *cli.Context) error {
 		// If the CA is not public then a root file is required.
 		root := ctx.String("root")
 		if len(root) == 0 {
-			return errs.RequiredFlag(ctx, "ca-url")
+			return errs.RequiredFlag(ctx, "root")
 		}
 		clientOps = append(clientOps, ca.WithRootFile(root))
 		// parse times or durations
