@@ -107,9 +107,16 @@ Request a new certificate with an RSA public key (default is ECDSA256):
 '''
 $ step ca certificate foo.internal foo.crt foo.key --kty RSA --size 4096
 
-Request a new certificate using the step CA ACME server and standalone mode:
+Request a new certificate using the step CA ACME server and a standalone server
+to serve the challenges locally:
 '''
 $ step ca certificate foobar foo.crt foo.key --acme --standalone \
+--san foo.internal --san bar.internal
+
+Request a new certificate using the step CA ACME server and an existing server
+along with webroot mode to serve the challenges locally:
+'''
+$ step ca certificate foobar foo.crt foo.key --acme --webroot "./acme-www" \
 --san foo.internal --san bar.internal
 '''`,
 		Flags: []cli.Flag{
@@ -836,7 +843,7 @@ func acmeFlow(ctx *cli.Context) error {
 
 	ac, err := ca.NewACMEClient(caURL, ctx.StringSlice("contact"), clientOps...)
 	if err != nil {
-		return errors.Wrapf(err, "error initializing ACME client with server %s", ctx.String("server"))
+		return errors.Wrapf(err, "error initializing ACME client with server %s", caURL)
 	}
 
 	o, err := ac.NewOrder(orderPayload)
