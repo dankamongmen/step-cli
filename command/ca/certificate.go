@@ -1,24 +1,18 @@
 package ca
 
 import (
-	"context"
 	"crypto"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/rand"
 	"net"
-	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/smallstep/certificates/acme"
-	acmeAPI "github.com/smallstep/certificates/acme/api"
 	"github.com/smallstep/certificates/api"
 	"github.com/smallstep/certificates/ca"
 	"github.com/smallstep/cli/command"
@@ -28,7 +22,6 @@ import (
 	"github.com/smallstep/cli/crypto/x509util"
 	"github.com/smallstep/cli/errs"
 	"github.com/smallstep/cli/flags"
-	"github.com/smallstep/cli/jose"
 	"github.com/smallstep/cli/token"
 	"github.com/smallstep/cli/ui"
 	"github.com/smallstep/cli/utils"
@@ -44,9 +37,9 @@ func certificateCommand() cli.Command {
 		UsageText: `**step ca certificate** <subject> <crt-file> <key-file>
 [**--token**=<token>]  [**--issuer**=<name>] [**--ca-url**=<uri>] [**--root**=<file>]
 [**--not-before**=<time|duration>] [**--not-after**=<time|duration>]
-[**--san**=<SAN>] [**--acme**] [**--standalone**] [**--webroot**=<path>]
-[**--contact**=<email>] [*--http-port*=<port>], [**--kty**=<type>]
-[**--curve**=<curve>] [**--size**=<size>] [**--console**]`,
+[**--san**=<SAN>] [**--acme**=<path>] [**--standalone**] [**--webroot**=<path>]
+[**--contact**=<email>] [**--http-listen**=<address>]
+[**--kty**=<type>] [**--curve**=<curve>] [**--size**=<size>] [**--console**]`,
 		Description: `**step ca certificate** command generates a new certificate pair
 
 ## POSITIONAL ARGUMENTS
@@ -141,30 +134,51 @@ this token must match the complete set of subjective alternative names in the
 token 1:1. Use the '--san' flag multiple times to configure multiple SANs. The
 '--san' flag and the '--token' flag are mutually exlusive.`,
 			},
-			cli.BoolFlag{
-				Name:  "acme",
-				Usage: `Use the ACME protocol to get a certificate.`,
+			cli.StringFlag{
+				Name: "acme",
+				Usage: `ACME directory URL to be used for requesting certificates via the ACME protocol.
+Use this flag to define an ACME server other than the Step CA. If this flag is
+absent and an ACME provisioner has been selected then the '--ca-url' flag must be defined.
+`,
 			},
 			cli.BoolFlag{
 				Name: "standalone",
-				Usage: `Run a standalone webserver for ACME authentication. Must be used in conjunction
-with the --acme flag.`,
+				Usage: `Get a certificate using the ACME protocol and standalone mode for validation.
+Standalone is a mode in which the step process will run a server that will
+will respond to ACME challenge validation requests.`,
 			},
 			cli.StringFlag{
 				Name: "webroot",
-				Usage: `Run a standalone webserver for ACME authentication. Must be used in conjunction
-with the --acme flag.`,
+				Usage: `Get a certificate using the ACME protocol and webroot mode for validation.
+Webroot is a mode in which the step process will write a challenge file to a location
+being served by an existing fileserver in order to respond to ACME challenge
+validation requests.`,
 			},
 			cli.StringSliceFlag{
 				Name: "contact",
 				Usage: `Email addresses for contact as part of the ACME protocol. These contacts
-may be used to warn of certificate expration or other certificate lifetime events.`,
+may be used to warn of certificate expration or other certificate lifetime events.
+Use the '--contact' flag multiple times to configure multiple contacts.`,
 			},
-			cli.IntFlag{
-				Name:  "http-port",
-				Usage: `Use a non-standard http port behind a reverse proxy or load balancer. (default is 80)`,
-				Value: 80,
+			cli.StringFlag{
+				Name: "http-listen",
+				Usage: `Use a non-standard http address, behind a reverse proxy or load balancer, for
+serving ACME challenges. The default address is :80, which requires super user
+(sudo) privileges. This flag must be used in conjunction with the '--standalone'
+flag.`,
+				Value: ":80",
 			},
+			/*
+							TODO: Not implemented yet.
+							cli.StringFlag{
+								Name: "https-listen",
+								Usage: `Use a non-standard https address, behind a reverse proxy or load balancer, for
+				serving ACME challenges. The default address is :443, which requires super user
+				(sudo) privileges. This flag must be used in conjunction with the '--standalone'
+				flag.`,
+								Value: ":443",
+							},
+			*/
 		},
 	}
 }
@@ -172,10 +186,6 @@ may be used to warn of certificate expration or other certificate lifetime event
 func certificateAction(ctx *cli.Context) error {
 	if err := errs.NumberOfArguments(ctx, 3); err != nil {
 		return err
-	}
-
-	if ctx.Bool("acme") {
-		return acmeFlow(ctx)
 	}
 
 	args := ctx.Args()
@@ -200,7 +210,14 @@ func certificateAction(ctx *cli.Context) error {
 
 	if len(tok) == 0 {
 		if tok, err = flow.GenerateToken(ctx, subject, sans); err != nil {
-			return err
+			switch k := err.(type) {
+			case *errACMEURL:
+				return acmeFlow(ctx, "")
+			case *errACMEToken:
+				return acmeFlow(ctx, k.id)
+			default:
+				return err
+			}
 		}
 	}
 
@@ -324,10 +341,21 @@ func (f *certificateFlow) getClient(ctx *cli.Context, subject, tok string) (caCl
 	return ca.NewClient(caURL, options...)
 }
 
+type errACMEURL struct {
+	id string
+}
+
+func (e *errACMEURL) Error() string {
+	return "Unsupported method for public facing ACME flows"
+}
+
 // GenerateToken generates a token for immediate use (therefore only default
 // validity values will be used). The token is generated either with the offline
 // token flow or the online mode.
 func (f *certificateFlow) GenerateToken(ctx *cli.Context, subject string, sans []string) (string, error) {
+	if ctx.IsSet("acme") {
+		return "", &errACMEURL{}
+	}
 	if f.offline {
 		return f.offlineCA.GenerateToken(ctx, signType, subject, sans, time.Time{}, time.Time{})
 	}
@@ -507,409 +535,4 @@ func parseTimeDuration(ctx *cli.Context) (notBefore api.TimeDuration, notAfter a
 		return zero, zero, errs.InvalidFlagValue(ctx, "not-after", ctx.String("not-after"), "")
 	}
 	return
-}
-
-func startHTTPServer(addr string, token string, keyAuth string) *http.Server {
-	srv := &http.Server{Addr: addr}
-
-	http.HandleFunc(fmt.Sprintf("/.well-known/acme-challenge/%s", token), func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(keyAuth))
-	})
-
-	go func() {
-		// returns ErrServerClosed on graceful close
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			// NOTE: there is a chance that next line won't have time to run,
-			// as main() doesn't wait for this goroutine to stop. don't use
-			// code with race conditions like these for production. see post
-			// comments below on more discussion on how to handle this.
-			ui.Printf("\nListenAndServe(): %s\n", err)
-		}
-	}()
-
-	// returning reference so caller can call Shutdown()
-	return srv
-}
-
-type issueMode interface {
-	Run() error
-	Cleanup() error
-}
-
-type standaloneMode struct {
-	identifier, token string
-	key               *jose.JSONWebKey
-	port              int
-	srv               *http.Server
-}
-
-func newStandaloneMode(identifier string, port int, token string, key *jose.JSONWebKey) *standaloneMode {
-	return &standaloneMode{
-		identifier: identifier,
-		port:       port,
-		token:      token,
-		key:        key,
-	}
-}
-
-func (sm *standaloneMode) Run() error {
-	ui.Printf("Using Standalone Mode HTTP challenge to validate %s .", sm.identifier)
-	keyAuth, err := acme.KeyAuthorization(sm.token, sm.key)
-	if err != nil {
-		return errors.Wrap(err, "error generating ACME key authorization")
-	}
-	sm.srv = startHTTPServer(fmt.Sprintf("0.0.0.0:%d", sm.port), sm.token, keyAuth)
-	return nil
-}
-
-func (sm *standaloneMode) Cleanup() error {
-	return errors.Wrap(sm.srv.Shutdown(context.TODO()), "error gracefully shutting down server")
-}
-
-type webrootMode struct {
-	dir, token, identifier string
-	key                    *jose.JSONWebKey
-}
-
-func newWebrootMode(dir, token, identifier string, key *jose.JSONWebKey) *webrootMode {
-	return &webrootMode{
-		dir:        dir,
-		token:      token,
-		identifier: identifier,
-		key:        key,
-	}
-}
-
-func (wm *webrootMode) Run() error {
-	ui.Printf("Using Webroot Mode HTTP challenge to validate %s .", wm.identifier)
-	keyAuth, err := acme.KeyAuthorization(wm.token, wm.key)
-	if err != nil {
-		return errors.Wrap(err, "error generating ACME key authorization")
-	}
-	_, err = os.Stat(wm.dir)
-	switch {
-	case os.IsNotExist(err):
-		return errors.Errorf("webroot directory %s does not exist", wm.dir)
-	case err != nil:
-		return errors.Wrapf(err, "error checking for directory %s", wm.dir)
-	}
-
-	chPath := fmt.Sprintf("%s/.well-known/acme-challenge", wm.dir)
-	if _, err = os.Stat(chPath); os.IsNotExist(err) {
-		if err = os.MkdirAll(chPath, 0700); err != nil {
-			return errors.Wrapf(err, "error creating directory path %s", chPath)
-		}
-	}
-
-	return errors.Wrapf(ioutil.WriteFile(fmt.Sprintf("%s/%s", chPath, wm.token), []byte(keyAuth), 0600),
-		"error writing key authorization file %s", chPath+wm.token)
-}
-
-func (wm *webrootMode) Cleanup() error {
-	return errors.Wrap(os.Remove(fmt.Sprintf("%s/.well-known/acme-challenge/%s",
-		wm.dir, wm.token)), "error removing ACME challenge file")
-}
-
-func serveAndValidateHTTPChallenge(ctx *cli.Context, ac *ca.ACMEClient, ch *acme.Challenge, identifier string) error {
-	isStandalone, webroot := ctx.Bool("standalone"), ctx.String("webroot")
-	var mode issueMode
-	switch {
-	case isStandalone && len(webroot) > 0:
-		return errs.MutuallyExclusiveFlags(ctx, "standalone", "webroot")
-	case !isStandalone && len(webroot) == 0:
-		return errs.RequiredWithOrFlag(ctx, "acme", "standalone", "webroot")
-	case isStandalone:
-		mode = newStandaloneMode(identifier, ctx.Int("http-port"), ch.Token, ac.Key)
-	default:
-		mode = newWebrootMode(webroot, ch.Token, identifier, ac.Key)
-	}
-	if err := mode.Run(); err != nil {
-		ui.Printf(" Error!\n\n")
-		mode.Cleanup()
-		return err
-	}
-
-	time.Sleep(1 * time.Second)
-	if err := ac.ValidateChallenge(ch.URL); err != nil {
-		ui.Printf(" Error!\n\n")
-		mode.Cleanup()
-		return errors.Wrapf(err, "error validating ACME Challenge at %s", ch.URL)
-	}
-	var (
-		isValid = false
-		vch     *acme.Challenge
-		err     error
-	)
-	for attempts := 0; attempts < 10; attempts++ {
-		time.Sleep(1 * time.Second)
-		ui.Printf(".")
-		vch, err = ac.GetChallenge(ch.URL)
-		if err != nil {
-			ui.Printf(" Error!\n\n")
-			mode.Cleanup()
-			return errors.Wrapf(err, "error retrieving ACME Challenge at %s", ch.URL)
-		}
-		if vch.Status == "valid" {
-			isValid = true
-			break
-		}
-	}
-	if !isValid {
-		ui.Printf(" Error!\n\n")
-		mode.Cleanup()
-		return errors.Errorf("Unable to validate challenge: %+v", vch)
-	}
-	if err := mode.Cleanup(); err != nil {
-		return err
-	}
-	ui.Printf(" done!\n")
-	return nil
-}
-
-func authorizeOrder(ctx *cli.Context, ac *ca.ACMEClient, o *acme.Order) error {
-	for _, azURL := range o.Authorizations {
-		az, err := ac.GetAuthz(azURL)
-		if err != nil {
-			return errors.Wrapf(err, "error retrieving ACME Authz at %s", azURL)
-		}
-
-		ident := az.Identifier.Value
-		if az.Wildcard {
-			ident = "*." + ident
-		}
-
-		chValidated := false
-		for _, ch := range az.Challenges {
-			// TODO: Allow other types of challenges (not just http).
-			if ch.Type == "http-01" {
-				if err := serveAndValidateHTTPChallenge(ctx, ac, ch, ident); err != nil {
-					return err
-				}
-				chValidated = true
-				break
-			}
-		}
-		if !chValidated {
-			if az.Wildcard {
-				return errors.Errorf("wildcard dnsnames (%s) require dns validation, "+
-					"which is currently not implemented in this client", ident)
-			}
-			return errors.Errorf("unable to validate any challenges for identifier: %s", ident)
-		}
-	}
-	return nil
-}
-
-func finalizeOrder(ac *ca.ACMEClient, o *acme.Order, csr *x509.CertificateRequest) (*acme.Order, error) {
-	var (
-		err              error
-		ro, fo           *acme.Order
-		isReady, isValid bool
-	)
-	ui.Printf("Waiting for Order to be 'ready' for finalization .")
-	for i := 9; i >= 0; i-- {
-		time.Sleep(1 * time.Second)
-		ui.Printf(".")
-		ro, err = ac.GetOrder(o.ID)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error retrieving order %s", o.ID)
-		}
-		if ro.Status == "ready" {
-			isReady = true
-			ui.Printf(" done!\n")
-			break
-		}
-	}
-	if !isReady {
-		ui.Printf(" Error!\n\n")
-		return nil, errors.Errorf("Unable to validate order: %+v", ro)
-	}
-
-	ui.Printf("Finalizing Order .")
-	if err = ac.FinalizeOrder(o.Finalize, csr); err != nil {
-		return nil, errors.Wrapf(err, "error finalizing order")
-	}
-
-	for i := 9; i >= 0; i-- {
-		time.Sleep(1 * time.Second)
-		ui.Printf(".")
-		fo, err = ac.GetOrder(o.ID)
-		if err != nil {
-			return nil, errors.Wrapf(err, "error retrieving order %s", o.ID)
-		}
-		if fo.Status == "valid" {
-			isValid = true
-			ui.Printf(" done!\n")
-			break
-		}
-	}
-	if !isValid {
-		ui.Printf(" Error!\n\n")
-		return nil, errors.Errorf("Unable to finalize order: %+v", fo)
-	}
-
-	return fo, nil
-}
-
-func acmeFlow(ctx *cli.Context) error {
-	args := ctx.Args()
-	subject := args.Get(0)
-	crtFile, keyFile := args.Get(1), args.Get(2)
-
-	sans := ctx.StringSlice("san")
-
-	if len(sans) == 0 {
-		sans = []string{subject}
-	}
-	dnsNames, ips := splitSANs(sans)
-	if len(ips) > 0 {
-		return errors.New("IP Address SANs are not supported for ACME flow")
-	}
-
-	caURL := ctx.String("ca-url")
-	if len(caURL) == 0 {
-		return errs.RequiredFlag(ctx, "ca-url")
-	}
-	if !(strings.HasSuffix(caURL, "directory") || strings.HasSuffix(caURL, "dir")) {
-		caURL = caURL + "/acme/directory"
-	}
-
-	var idents []acme.Identifier
-	for _, dns := range dnsNames {
-		idents = append(idents, acme.Identifier{
-			Type:  "dns",
-			Value: dns,
-		})
-	}
-
-	var (
-		err          error
-		orderPayload []byte
-		clientOps    []ca.ClientOption
-	)
-	if strings.Contains(caURL, "letsencrypt") {
-		// LetsEncrypt does not support NotBefore and NotAfter attributes in orders.
-		if ctx.IsSet("not-before") || ctx.IsSet("not-after") {
-			return errors.New("LetsEncrypt public CA does not support NotBefore/NotAfter " +
-				"attributes for certificates. Instead, each certificate has a default lifetime of 3 months.")
-		}
-		// Use default transport for public CAs
-		clientOps = append(clientOps, ca.WithTransport(http.DefaultTransport))
-		// LetsEncrypt requires that the Common Name of the Certificate also be
-		// represented as a DNSName in the SAN extension, and therefore must be
-		// authorized as part of the ACME order.
-		hasSubject := false
-		for _, n := range idents {
-			if n.Value == subject {
-				hasSubject = true
-			}
-		}
-		if !hasSubject {
-			dnsNames = append(dnsNames, subject)
-			idents = append(idents, acme.Identifier{
-				Type:  "dns",
-				Value: subject,
-			})
-		}
-		orderPayload, err = json.Marshal(struct {
-			Identifiers []acme.Identifier
-		}{Identifiers: idents})
-		if err != nil {
-			return errors.Wrap(err, "error marshaling new letsencrypt order request")
-		}
-	} else {
-		// If the CA is not public then a root file is required.
-		root := ctx.String("root")
-		if len(root) == 0 {
-			return errs.RequiredFlag(ctx, "root")
-		}
-		clientOps = append(clientOps, ca.WithRootFile(root))
-		// parse times or durations
-		nbf, naf, err := parseTimeDuration(ctx)
-		if err != nil {
-			return err
-		}
-
-		nor := acmeAPI.NewOrderRequest{
-			Identifiers: idents,
-			NotAfter:    naf.Time(),
-			NotBefore:   nbf.Time(),
-		}
-		orderPayload, err = json.Marshal(nor)
-		if err != nil {
-			return errors.Wrap(err, "error marshaling new order request")
-		}
-	}
-
-	ac, err := ca.NewACMEClient(caURL, ctx.StringSlice("contact"), clientOps...)
-	if err != nil {
-		return errors.Wrapf(err, "error initializing ACME client with server %s", caURL)
-	}
-
-	o, err := ac.NewOrder(orderPayload)
-	if err != nil {
-		return errors.Wrapf(err, "error creating new ACME order")
-	}
-
-	if err := authorizeOrder(ctx, ac, o); err != nil {
-		return err
-	}
-
-	kty, crv, size, err := utils.GetKeyDetailsFromCLI(ctx, ctx.Bool("insecure"), "kty", "curve", "size")
-	if err != nil {
-		return err
-	}
-	priv, err := keys.GenerateKey(kty, crv, size)
-	if err != nil {
-		return errors.Wrap(err, "error generating private key")
-	}
-
-	_csr := &x509.CertificateRequest{
-		Subject: pkix.Name{
-			CommonName: subject,
-		},
-		DNSNames: dnsNames,
-	}
-	csrBytes, err := x509.CreateCertificateRequest(rand.Reader, _csr, priv)
-	if err != nil {
-		return errors.Wrap(err, "error creating certificate request")
-	}
-	csr, err := x509.ParseCertificateRequest(csrBytes)
-	if err != nil {
-		return errors.Wrap(err, "error parsing certificate request")
-	}
-
-	fo, err := finalizeOrder(ac, o, csr)
-	if err != nil {
-		return err
-	}
-
-	leaf, chain, err := ac.GetCertificate(fo.Certificate)
-	if err != nil {
-		return errors.Wrapf(err, "error getting certificate")
-	}
-
-	certBytes := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: leaf.Raw,
-	})
-	for _, cert := range chain {
-		certBytes = append(certBytes, pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: cert.Raw,
-		})...)
-	}
-
-	if err := utils.WriteFile(crtFile, certBytes, 0600); err != nil {
-		return errs.FileError(err, crtFile)
-	}
-
-	_, err = pemutil.Serialize(priv, pemutil.ToFile(keyFile, 0600))
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	ui.PrintSelected("Certificate", crtFile)
-	ui.PrintSelected("Private Key", keyFile)
-	return nil
 }

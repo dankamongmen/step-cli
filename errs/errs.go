@@ -239,12 +239,12 @@ func RequiredOrFlag(ctx *cli.Context, flags ...string) error {
 
 // RequiredWithOrFlag returns an error with a list of flags at least one of which
 // is required in conjunction with the last flag in the list.
-func RequiredWithOrFlag(ctx *cli.Context, flags ...string) error {
-	params := make([]string, len(flags)-1)
-	for i := 1; i <= len(flags)-1; i++ {
-		params[i-1] = "--" + flags[i]
+func RequiredWithOrFlag(ctx *cli.Context, withFlag string, flags ...string) error {
+	params := make([]string, len(flags))
+	for i := 0; i <= len(flags); i++ {
+		params[i] = "--" + flags[i]
 	}
-	return errors.Errorf("one of flag %s is required with flag --%s", strings.Join(params, " or "), flags[0])
+	return errors.Errorf("one of flag %s is required with flag --%s", strings.Join(params, " or "), withFlag)
 }
 
 // MinSizeFlag returns an error with a greater or equal message message for
