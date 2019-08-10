@@ -241,7 +241,7 @@ func RequiredOrFlag(ctx *cli.Context, flags ...string) error {
 // is required in conjunction with the last flag in the list.
 func RequiredWithOrFlag(ctx *cli.Context, withFlag string, flags ...string) error {
 	params := make([]string, len(flags))
-	for i := 0; i <= len(flags); i++ {
+	for i := 0; i < len(flags); i++ {
 		params[i] = "--" + flags[i]
 	}
 	return errors.Errorf("one of flag %s is required with flag --%s", strings.Join(params, " or "), withFlag)

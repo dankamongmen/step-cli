@@ -136,17 +136,11 @@ func (wm *webrootMode) Cleanup() error {
 }
 
 func serveAndValidateHTTPChallenge(ctx *cli.Context, ac *ca.ACMEClient, ch *acme.Challenge, identifier string) error {
-	isStandalone, webroot := ctx.Bool("standalone"), ctx.String("webroot")
 	var mode issueMode
-	switch {
-	case isStandalone && len(webroot) > 0:
-		return errs.MutuallyExclusiveFlags(ctx, "standalone", "webroot")
-	case !isStandalone && len(webroot) == 0:
-		return errs.RequiredWithOrFlag(ctx, "acme", "standalone", "webroot")
-	case isStandalone:
+	if ctx.Bool("standalone") {
 		mode = newStandaloneMode(identifier, ctx.String("http-listen"), ch.Token, ac.Key)
-	default:
-		mode = newWebrootMode(webroot, ch.Token, identifier, ac.Key)
+	} else {
+		mode = newWebrootMode(ctx.String("webroot"), ch.Token, identifier, ac.Key)
 	}
 	if err := mode.Run(); err != nil {
 		ui.Printf(" Error!\n\n")
@@ -286,9 +280,19 @@ func validateSANsForACME(sans []string) ([]string, error) {
 }
 
 func acmeFlow(ctx *cli.Context, provID string) error {
+	// Offline mode is not supported for ACME protocol
 	if ctx.Bool("offline") {
 		return errors.New("offline mode and ACME are mutually exclusive")
 	}
+	// One of --standalone or --webroot must be selected for use with ACME protocol.
+	isStandalone, webroot := ctx.Bool("standalone"), ctx.String("webroot")
+	switch {
+	case isStandalone && len(webroot) > 0:
+		return errs.MutuallyExclusiveFlags(ctx, "standalone", "webroot")
+	case !isStandalone && len(webroot) == 0:
+		return errs.RequiredWithOrFlag(ctx, "acme", "standalone", "webroot")
+	}
+
 	args := ctx.Args()
 	subject := args.Get(0)
 	crtFile, keyFile := args.Get(1), args.Get(2)
