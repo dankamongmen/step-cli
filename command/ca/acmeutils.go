@@ -290,7 +290,9 @@ func acmeFlow(ctx *cli.Context, provID string) error {
 	case isStandalone && len(webroot) > 0:
 		return errs.MutuallyExclusiveFlags(ctx, "standalone", "webroot")
 	case !isStandalone && len(webroot) == 0:
-		return errs.RequiredWithOrFlag(ctx, "acme", "standalone", "webroot")
+		if err := ctx.Set("standalone", "true"); err != nil {
+			return errors.Wrap(err, "error setting 'standalone' value in cli ctx")
+		}
 	}
 
 	args := ctx.Args()
