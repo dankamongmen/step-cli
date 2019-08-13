@@ -490,7 +490,7 @@ func addGCPProvisioner(ctx *cli.Context, name string, provMap map[string]bool) (
 }
 
 func addACMEProvisioner(ctx *cli.Context, name string, provMap map[string]bool) (list provisioner.List, err error) {
-	p := &provisioner.GCP{
+	p := &provisioner.ACME{
 		Type: provisioner.TypeACME.String(),
 		Name: name,
 	}

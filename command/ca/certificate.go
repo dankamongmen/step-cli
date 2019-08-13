@@ -101,10 +101,9 @@ Request a new certificate with an RSA public key (default is ECDSA256):
 $ step ca certificate foo.internal foo.crt foo.key --kty RSA --size 4096
 
 Request a new certificate using the step CA ACME server and a standalone server
-to serve the challenges locally:
+to serve the challenges locally (standalone mode is the default):
 '''
-$ step ca certificate foobar foo.crt foo.key --acme --standalone \
---san foo.internal --san bar.internal
+$ step ca certificate foobar foo.crt foo.key --acme --san foo.internal --san bar.internal
 
 Request a new certificate using the step CA ACME server and an existing server
 along with webroot mode to serve the challenges locally:
@@ -145,7 +144,8 @@ absent and an ACME provisioner has been selected then the '--ca-url' flag must b
 				Name: "standalone",
 				Usage: `Get a certificate using the ACME protocol and standalone mode for validation.
 Standalone is a mode in which the step process will run a server that will
-will respond to ACME challenge validation requests.`,
+will respond to ACME challenge validation requests. Standalone is the default
+mode for serving challenge validation requests.`,
 			},
 			cli.StringFlag{
 				Name: "webroot",
