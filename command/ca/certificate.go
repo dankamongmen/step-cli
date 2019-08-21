@@ -137,8 +137,7 @@ token 1:1. Use the '--san' flag multiple times to configure multiple SANs. The
 				Name: "acme",
 				Usage: `ACME directory URL to be used for requesting certificates via the ACME protocol.
 Use this flag to define an ACME server other than the Step CA. If this flag is
-absent and an ACME provisioner has been selected then the '--ca-url' flag must be defined.
-`,
+absent and an ACME provisioner has been selected then the '--ca-url' flag must be defined.`,
 			},
 			cli.BoolFlag{
 				Name: "standalone",
@@ -209,10 +208,13 @@ func certificateAction(ctx *cli.Context) error {
 	}
 
 	if len(tok) == 0 {
+		// Use the ACME protocol with a different certificate authority.
+		if ctx.IsSet("acme") {
+			return acmeFlow(ctx, "")
+		}
 		if tok, err = flow.GenerateToken(ctx, subject, sans); err != nil {
 			switch k := err.(type) {
-			case *errACMEURL:
-				return acmeFlow(ctx, "")
+			// Use the ACME flow with the step certificate authority.
 			case *errACMEToken:
 				return acmeFlow(ctx, k.id)
 			default:
@@ -341,21 +343,10 @@ func (f *certificateFlow) getClient(ctx *cli.Context, subject, tok string) (caCl
 	return ca.NewClient(caURL, options...)
 }
 
-type errACMEURL struct {
-	id string
-}
-
-func (e *errACMEURL) Error() string {
-	return "Unsupported method for public facing ACME flows"
-}
-
 // GenerateToken generates a token for immediate use (therefore only default
 // validity values will be used). The token is generated either with the offline
 // token flow or the online mode.
 func (f *certificateFlow) GenerateToken(ctx *cli.Context, subject string, sans []string) (string, error) {
-	if ctx.IsSet("acme") {
-		return "", &errACMEURL{}
-	}
 	if f.offline {
 		return f.offlineCA.GenerateToken(ctx, signType, subject, sans, time.Time{}, time.Time{})
 	}

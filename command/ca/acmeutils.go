@@ -32,6 +32,7 @@ func startHTTPServer(addr string, token string, keyAuth string) *http.Server {
 	srv := &http.Server{Addr: addr}
 
 	http.HandleFunc(fmt.Sprintf("/.well-known/acme-challenge/%s", token), func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Write([]byte(keyAuth))
 	})
 
@@ -72,7 +73,7 @@ func newStandaloneMode(identifier, listenAddr, token string, key *jose.JSONWebKe
 }
 
 func (sm *standaloneMode) Run() error {
-	ui.Printf("Using Standalone Mode HTTP challenge to validate %s .", sm.identifier)
+	ui.Printf("Using Standalone Mode HTTP challenge to validate %s", sm.identifier)
 	keyAuth, err := acme.KeyAuthorization(sm.token, sm.key)
 	if err != nil {
 		return errors.Wrap(err, "error generating ACME key authorization")
@@ -102,7 +103,7 @@ func newWebrootMode(dir, token, identifier string, key *jose.JSONWebKey) *webroo
 }
 
 func (wm *webrootMode) Run() error {
-	ui.Printf("Using Webroot Mode HTTP challenge to validate %s .", wm.identifier)
+	ui.Printf("Using Webroot Mode HTTP challenge to validate %s", wm.identifier)
 	keyAuth, err := acme.KeyAuthorization(wm.token, wm.key)
 	if err != nil {
 		return errors.Wrap(err, "error generating ACME key authorization")
@@ -147,6 +148,7 @@ func serveAndValidateHTTPChallenge(ctx *cli.Context, ac *ca.ACMEClient, ch *acme
 		mode.Cleanup()
 		return err
 	}
+	ui.Printf(" .") // Indicates passage of time.
 
 	if err := ac.ValidateChallenge(ch.URL); err != nil {
 		ui.Printf(" Error!\n\n")
