@@ -37,9 +37,14 @@ func certificateCommand() cli.Command {
 		UsageText: `**step ca certificate** <subject> <crt-file> <key-file>
 [**--token**=<token>]  [**--issuer**=<name>] [**--ca-url**=<uri>] [**--root**=<file>]
 [**--not-before**=<time|duration>] [**--not-after**=<time|duration>]
+<<<<<<< HEAD
 [**--san**=<SAN>] [**--acme**=<path>] [**--standalone**] [**--webroot**=<path>]
 [**--contact**=<email>] [**--http-listen**=<address>]
 [**--kty**=<type>] [**--curve**=<curve>] [**--size**=<size>] [**--console**]`,
+=======
+[**--san**=<SAN>] [**--acme**=<uri>] [**--standalone**] [**--webroot**=<path>]
+[**--contact**=<email>] [**--http-listen**=<address>] [**--bundle**]`,
+>>>>>>> wip
 		Description: `**step ca certificate** command generates a new certificate pair
 
 ## POSITIONAL ARGUMENTS
@@ -91,6 +96,7 @@ Request a new certificate using an OIDC provisioner:
 $ step ca certificate --token $(step oauth --oidc --bare) joe@example.com joe.crt joe.key
 '''
 
+<<<<<<< HEAD
 Request a new certificate using an OIDC provisioner while remaining in the console:
 '''
 $ step ca certificate joe@example.com joe.crt joe.key --issuer Google --console
@@ -99,17 +105,36 @@ $ step ca certificate joe@example.com joe.crt joe.key --issuer Google --console
 Request a new certificate with an RSA public key (default is ECDSA256):
 '''
 $ step ca certificate foo.internal foo.crt foo.key --kty RSA --size 4096
+=======
+**step CA ACME** - In order to use the step CA ACME protocol you must add a
+ACME provisioner to the step CA config. See **step ca provisioner add -h**.
+>>>>>>> wip
 
 Request a new certificate using the step CA ACME server and a standalone server
 to serve the challenges locally (standalone mode is the default):
 '''
+<<<<<<< HEAD
 $ step ca certificate foobar foo.crt foo.key --acme --san foo.internal --san bar.internal
+=======
+$ step ca certificate foobar foo.crt foo.key --provisioner my-acme-provisioner --san foo.internal --san bar.internal
+'''
+>>>>>>> wip
 
 Request a new certificate using the step CA ACME server and an existing server
 along with webroot mode to serve the challenges locally:
 '''
-$ step ca certificate foobar foo.crt foo.key --acme --webroot "./acme-www" \
+$ step ca certificate foobar foo.crt foo.key --provisioner my-acme-provisioner --webroot "./acme-www" \
 --san foo.internal --san bar.internal
+'''
+
+Request a new certificate using the ACME protocol not served via the step CA
+(e.g. letsencrypt). NOTE: Let's Encrypt requires that the Subject Common Name
+of a requested certificate be validated as an Identifier in the ACME order along
+with any other SANS. Therefore, the Common Name must be a valid DNS Name. The
+step CA does not impose this requirement.
+'''
+$ step ca certificate foo.internal foo.crt foo.key \
+--acme https://acme-staging-v02.api.letsencrypt.org/directory --san bar.internal
 '''`,
 		Flags: []cli.Flag{
 			consoleFlag,
@@ -210,13 +235,13 @@ func certificateAction(ctx *cli.Context) error {
 	if len(tok) == 0 {
 		// Use the ACME protocol with a different certificate authority.
 		if ctx.IsSet("acme") {
-			return acmeFlow(ctx, "")
+			return acmeCreateCertFlow(ctx, "")
 		}
 		if tok, err = flow.GenerateToken(ctx, subject, sans); err != nil {
 			switch k := err.(type) {
 			// Use the ACME flow with the step certificate authority.
 			case *errACMEToken:
-				return acmeFlow(ctx, k.id)
+				return acmeCreateCertFlow(ctx, k.id)
 			default:
 				return err
 			}
@@ -526,4 +551,31 @@ func parseTimeDuration(ctx *cli.Context) (notBefore api.TimeDuration, notAfter a
 		return zero, zero, errs.InvalidFlagValue(ctx, "not-after", ctx.String("not-after"), "")
 	}
 	return
+}
+
+func acmeCreateCertFlow(ctx *cli.Context, provisionerID string) error {
+	args := ctx.Args()
+	subject := args.Get(0)
+	certFile, keyFile := args.Get(1), args.Get(2)
+
+	af, err := newACMEFlow(ctx, withSubjectSANs(subject, ctx.StringSlice("san")),
+		withProvisionerID(provisionerID))
+	if err != nil {
+		return err
+	}
+	certs, err := af.GetCertificate()
+	if err != nil {
+		return err
+	}
+	if err = writeCert(certs, certFile); err != nil {
+		return err
+	}
+	ui.PrintSelected("Certificate", certFile)
+
+	_, err = pemutil.Serialize(af.priv, pemutil.ToFile(keyFile, 0600))
+	if err != nil {
+		return errors.WithStack(err)
+	}
+	ui.PrintSelected("Private Key", keyFile)
+	return nil
 }

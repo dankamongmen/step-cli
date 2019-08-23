@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
-	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -19,12 +18,10 @@ import (
 	acmeAPI "github.com/smallstep/certificates/acme/api"
 	"github.com/smallstep/certificates/ca"
 	"github.com/smallstep/cli/crypto/keys"
-	"github.com/smallstep/cli/crypto/pemutil"
 	"github.com/smallstep/cli/crypto/pki"
 	"github.com/smallstep/cli/errs"
 	"github.com/smallstep/cli/jose"
 	"github.com/smallstep/cli/ui"
-	"github.com/smallstep/cli/utils"
 	"github.com/urfave/cli"
 )
 
@@ -281,42 +278,90 @@ func validateSANsForACME(sans []string) ([]string, error) {
 	return dnsNames, nil
 }
 
-func acmeFlow(ctx *cli.Context, provID string) error {
+type acmeFlowOp func(*acmeFlow) error
+
+func withProvisionerID(pid string) acmeFlowOp {
+	return func(af *acmeFlow) error {
+		af.provisionerID = pid
+		return nil
+	}
+}
+
+func withCSR(csr *x509.CertificateRequest) acmeFlowOp {
+	return func(af *acmeFlow) error {
+		af.csr = csr
+		af.subject = csr.Subject.CommonName
+		af.sans = csr.DNSNames
+		if len(af.sans) == 0 {
+			af.sans = []string{af.subject}
+		}
+
+		return nil
+	}
+}
+
+func withSubjectSANs(sub string, sans []string) acmeFlowOp {
+	return func(af *acmeFlow) error {
+		af.subject = sub
+		af.sans = sans
+		return nil
+	}
+}
+
+type acmeFlow struct {
+	ctx           *cli.Context
+	provisionerID string
+	csr           *x509.CertificateRequest
+	pub, priv     interface{}
+	subject       string
+	sans          []string
+	acmeDir       string
+}
+
+func newACMEFlow(ctx *cli.Context, ops ...acmeFlowOp) (*acmeFlow, error) {
 	// Offline mode is not supported for ACME protocol
 	if ctx.Bool("offline") {
-		return errors.New("offline mode and ACME are mutually exclusive")
+		return nil, errors.New("offline mode and ACME are mutually exclusive")
 	}
 	// One of --standalone or --webroot must be selected for use with ACME protocol.
 	isStandalone, webroot := ctx.Bool("standalone"), ctx.String("webroot")
 	switch {
 	case isStandalone && len(webroot) > 0:
-		return errs.MutuallyExclusiveFlags(ctx, "standalone", "webroot")
+		return nil, errs.MutuallyExclusiveFlags(ctx, "standalone", "webroot")
 	case !isStandalone && len(webroot) == 0:
 		if err := ctx.Set("standalone", "true"); err != nil {
-			return errors.Wrap(err, "error setting 'standalone' value in cli ctx")
+			return nil, errors.Wrap(err, "error setting 'standalone' value in cli ctx")
 		}
 	}
 
-	args := ctx.Args()
-	subject := args.Get(0)
-	crtFile, keyFile := args.Get(1), args.Get(2)
-	acmeDir := ctx.String("acme")
-	if len(acmeDir) == 0 {
+	af := new(acmeFlow)
+	for _, op := range ops {
+		if err := op(af); err != nil {
+			return nil, err
+		}
+	}
+
+	af.ctx = ctx
+
+	af.acmeDir = ctx.String("acme")
+	if len(af.acmeDir) == 0 {
 		caURL := ctx.String("ca-url")
 		if len(caURL) == 0 {
-			return errs.RequiredFlag(ctx, "ca-url")
+			return nil, errs.RequiredFlag(ctx, "ca-url")
 		}
-		acmeDir = fmt.Sprintf("%s/acme/%s/directory", caURL, provID)
+		if len(af.provisionerID) == 0 {
+			return nil, errors.New("acme flow expected provisioner ID")
+		}
+		af.acmeDir = fmt.Sprintf("%s/acme/%s/directory", caURL, af.provisionerID)
 	}
 
-	sans := ctx.StringSlice("san")
-	if len(sans) == 0 {
-		sans = []string{subject}
-	}
+	return af, nil
+}
 
-	dnsNames, err := validateSANsForACME(sans)
+func (af *acmeFlow) GetCertificate() ([]*x509.Certificate, error) {
+	dnsNames, err := validateSANsForACME(af.sans)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var idents []acme.Identifier
@@ -331,10 +376,10 @@ func acmeFlow(ctx *cli.Context, provID string) error {
 		orderPayload []byte
 		clientOps    []ca.ClientOption
 	)
-	if strings.Contains(acmeDir, "letsencrypt") {
+	if strings.Contains(af.acmeDir, "letsencrypt") {
 		// LetsEncrypt does not support NotBefore and NotAfter attributes in orders.
-		if ctx.IsSet("not-before") || ctx.IsSet("not-after") {
-			return errors.New("LetsEncrypt public CA does not support NotBefore/NotAfter " +
+		if af.ctx.IsSet("not-before") || af.ctx.IsSet("not-after") {
+			return nil, errors.New("LetsEncrypt public CA does not support NotBefore/NotAfter " +
 				"attributes for certificates. Instead, each certificate has a default lifetime of 3 months.")
 		}
 		// Use default transport for public CAs
@@ -344,37 +389,37 @@ func acmeFlow(ctx *cli.Context, provID string) error {
 		// authorized as part of the ACME order.
 		hasSubject := false
 		for _, n := range idents {
-			if n.Value == subject {
+			if n.Value == af.subject {
 				hasSubject = true
 			}
 		}
 		if !hasSubject {
-			dnsNames = append(dnsNames, subject)
+			dnsNames = append(dnsNames, af.subject)
 			idents = append(idents, acme.Identifier{
 				Type:  "dns",
-				Value: subject,
+				Value: af.subject,
 			})
 		}
 		orderPayload, err = json.Marshal(struct {
 			Identifiers []acme.Identifier
 		}{Identifiers: idents})
 		if err != nil {
-			return errors.Wrap(err, "error marshaling new letsencrypt order request")
+			return nil, errors.Wrap(err, "error marshaling new letsencrypt order request")
 		}
 	} else {
 		// If the CA is not public then a root file is required.
-		root := ctx.String("root")
+		root := af.ctx.String("root")
 		if len(root) == 0 {
 			root = pki.GetRootCAPath()
 			if _, err := os.Stat(root); err != nil {
-				return errs.RequiredFlag(ctx, "root")
+				return nil, errs.RequiredFlag(af.ctx, "root")
 			}
 		}
 		clientOps = append(clientOps, ca.WithRootFile(root))
 		// parse times or durations
-		nbf, naf, err := parseTimeDuration(ctx)
+		nbf, naf, err := parseTimeDuration(af.ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		nor := acmeAPI.NewOrderRequest{
@@ -384,75 +429,55 @@ func acmeFlow(ctx *cli.Context, provID string) error {
 		}
 		orderPayload, err = json.Marshal(nor)
 		if err != nil {
-			return errors.Wrap(err, "error marshaling new order request")
+			return nil, errors.Wrap(err, "error marshaling new order request")
 		}
 	}
 
-	ac, err := ca.NewACMEClient(acmeDir, ctx.StringSlice("contact"), clientOps...)
+	ac, err := ca.NewACMEClient(af.acmeDir, af.ctx.StringSlice("contact"), clientOps...)
 	if err != nil {
-		return errors.Wrapf(err, "error initializing ACME client with server %s", acmeDir)
+		return nil, errors.Wrapf(err, "error initializing ACME client with server %s", af.acmeDir)
 	}
 
 	o, err := ac.NewOrder(orderPayload)
 	if err != nil {
-		return errors.Wrapf(err, "error creating new ACME order")
+		return nil, errors.Wrapf(err, "error creating new ACME order")
 	}
 
-	if err := authorizeOrder(ctx, ac, o); err != nil {
-		return err
+	if err = authorizeOrder(af.ctx, ac, o); err != nil {
+		return nil, err
 	}
 
-	priv, err := keys.GenerateDefaultKey()
-	if err != nil {
-		return errors.Wrap(err, "error generating private key")
+	if af.csr == nil {
+		af.priv, err = keys.GenerateDefaultKey()
+		if err != nil {
+			return nil, errors.Wrap(err, "error generating private key")
+		}
+
+		_csr := &x509.CertificateRequest{
+			Subject: pkix.Name{
+				CommonName: af.subject,
+			},
+			DNSNames: dnsNames,
+		}
+		var csrBytes []byte
+		csrBytes, err = x509.CreateCertificateRequest(rand.Reader, _csr, af.priv)
+		if err != nil {
+			return nil, errors.Wrap(err, "error creating certificate request")
+		}
+		af.csr, err = x509.ParseCertificateRequest(csrBytes)
+		if err != nil {
+			return nil, errors.Wrap(err, "error parsing certificate request")
+		}
 	}
 
-	_csr := &x509.CertificateRequest{
-		Subject: pkix.Name{
-			CommonName: subject,
-		},
-		DNSNames: dnsNames,
-	}
-	csrBytes, err := x509.CreateCertificateRequest(rand.Reader, _csr, priv)
+	fo, err := finalizeOrder(ac, o, af.csr)
 	if err != nil {
-		return errors.Wrap(err, "error creating certificate request")
-	}
-	csr, err := x509.ParseCertificateRequest(csrBytes)
-	if err != nil {
-		return errors.Wrap(err, "error parsing certificate request")
-	}
-
-	fo, err := finalizeOrder(ac, o, csr)
-	if err != nil {
-		return err
+		return nil, err
 	}
 
 	leaf, chain, err := ac.GetCertificate(fo.Certificate)
 	if err != nil {
-		return errors.Wrapf(err, "error getting certificate")
+		return nil, errors.Wrapf(err, "error getting certificate")
 	}
-
-	certBytes := pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: leaf.Raw,
-	})
-	for _, cert := range chain {
-		certBytes = append(certBytes, pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: cert.Raw,
-		})...)
-	}
-
-	if err := utils.WriteFile(crtFile, certBytes, 0600); err != nil {
-		return errs.FileError(err, crtFile)
-	}
-
-	_, err = pemutil.Serialize(priv, pemutil.ToFile(keyFile, 0600))
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	ui.PrintSelected("Certificate", crtFile)
-	ui.PrintSelected("Private Key", keyFile)
-	return nil
+	return append([]*x509.Certificate{leaf}, chain...), nil
 }
