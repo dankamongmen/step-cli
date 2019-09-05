@@ -52,7 +52,7 @@
   unused-packages = true
 
 [[constraint]]
-  branch = "master"
+  branch = "x5c"
   name = "github.com/smallstep/certificates"
 
 [[constraint]]

@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/smallstep/cli/crypto/pemutil"
 	"github.com/smallstep/cli/crypto/randutil"
 	"github.com/smallstep/cli/errs"
 	"github.com/smallstep/cli/jose"
@@ -197,6 +199,14 @@ the **"kid"** member of one of the JWKs in the JWK Set.`,
 				Name:   "no-kid",
 				Hidden: true,
 			},
+			cli.StringFlag{
+				Name:  "x5c",
+				Usage: "woohoo",
+			},
+			cli.BoolFlag{
+				Name:  "rand-jti",
+				Usage: "shoohoo",
+			},
 		},
 	}
 }
@@ -294,6 +304,16 @@ func signAction(ctx *cli.Context) error {
 		return errors.New("flag '--exp' must be in the future unless the '--subtle' flag is provided")
 	}
 
+	var jti string
+	if ctx.Bool("rand-jti") {
+		jti, err = randutil.Hex(64) // 256 bits
+		if err != nil {
+			return errors.Wrap(err, "error generating random JWT ID")
+		}
+	} else {
+		jti = ctx.String("jti")
+	}
+
 	// Add claims
 	c := &jose.Claims{
 		Issuer:    ctx.String("iss"),
@@ -302,7 +322,7 @@ func signAction(ctx *cli.Context) error {
 		Expiry:    jose.UnixNumericDate(ctx.Int64("exp")),
 		NotBefore: jose.UnixNumericDate(ctx.Int64("nbf")),
 		IssuedAt:  jose.UnixNumericDate(ctx.Int64("iat")),
-		ID:        ctx.String("jti"),
+		ID:        jti,
 	}
 	now := time.Now()
 	if c.NotBefore == nil {
@@ -338,6 +358,19 @@ func signAction(ctx *cli.Context) error {
 	so.WithType("JWT")
 	if !ctx.Bool("no-kid") && jwk.KeyID != "" {
 		so.WithHeader("kid", jwk.KeyID)
+	}
+
+	x5c := ctx.String("x5c")
+	if len(x5c) > 0 {
+		certs, err := pemutil.ReadCertificateBundle(x5c)
+		if err != nil {
+			return errors.Wrap(err, "error reading cert file for x5c header")
+		}
+		strs := make([]string, len(certs))
+		for i, cert := range certs {
+			strs[i] = base64.StdEncoding.EncodeToString(cert.Raw)
+		}
+		so.WithHeader("x5c", strs)
 	}
 
 	signer, err := jose.NewSigner(jose.SigningKey{

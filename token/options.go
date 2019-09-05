@@ -2,6 +2,7 @@ package token
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"time"
 
@@ -138,6 +139,26 @@ func WithKid(s string) Options {
 			return errors.New("kid cannot be empty")
 		}
 		c.SetHeader("kid", s)
+		return nil
+	}
+}
+
+// WithX5CFile returns a Options that sets the header x5c claims.
+// If WithKid is not used a thumbprint using SHA256 will be used.
+func WithX5CFile(s string) Options {
+	return func(c *Claims) error {
+		if s == "" {
+			return errors.New("x5c cannot be empty")
+		}
+		certs, err := pemutil.ReadCertificateBundle(s)
+		if err != nil {
+			return errors.Wrap(err, "error reading cert file for x5c header")
+		}
+		strs := make([]string, len(certs))
+		for i, cert := range certs {
+			strs[i] = base64.StdEncoding.EncodeToString(cert.Raw)
+		}
+		c.SetHeader("x5c", strs)
 		return nil
 	}
 }

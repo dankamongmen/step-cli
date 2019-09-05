@@ -122,6 +122,15 @@ token 1:1. Use the '--san' flag multiple times to configure multiple SANs. The
 			flags.KTY,
 			flags.Size,
 			flags.Curve,
+			cli.StringFlag{
+				Name: "x5c-key",
+				Usage: `Private key, used to sign a JWT, corresponding to the certificate that will
+be stored in the 'x5c' header.`,
+			},
+			cli.StringFlag{
+				Name:  "x5c-cert",
+				Usage: "Certificate (chain) to store in the 'x5c' header of a JWT.",
+			},
 		},
 	}
 }

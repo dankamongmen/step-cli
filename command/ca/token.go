@@ -3,6 +3,7 @@ package ca
 import (
 	"crypto"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -278,21 +279,21 @@ func parseAudience(ctx *cli.Context, tokType int) (string, error) {
 
 // generateToken generates a provisioning or bootstrap token with the given
 // parameters.
-func generateToken(typ int, sub string, sans []string, kid, iss, aud, root string, notBefore, notAfter time.Time, jwk *jose.JSONWebKey) (string, error) {
+func generateToken(typ int, sub string, sans []string, kid, iss, aud, root string, notBefore, notAfter time.Time, jwk *jose.JSONWebKey, tokOps ...token.Options) (string, error) {
 	// A random jwt id will be used to identify duplicated tokens
 	jwtID, err := randutil.Hex(64) // 256 bits
 	if err != nil {
 		return "", err
 	}
 
-	tokOptions := []token.Options{
+	tokOps = append(tokOps, []token.Options{
 		token.WithJWTID(jwtID),
 		token.WithKid(kid),
 		token.WithIssuer(iss),
 		token.WithAudience(aud),
-	}
+	}...)
 	if len(root) > 0 {
-		tokOptions = append(tokOptions, token.WithRootCA(root))
+		tokOps = append(tokOps, token.WithRootCA(root))
 	}
 
 	// If 'sign' token then add SANs.
@@ -301,7 +302,7 @@ func generateToken(typ int, sub string, sans []string, kid, iss, aud, root strin
 		if len(sans) == 0 {
 			sans = []string{sub}
 		}
-		tokOptions = append(tokOptions, token.WithSANS(sans))
+		tokOps = append(tokOps, token.WithSANS(sans))
 	}
 
 	if !notBefore.IsZero() || !notAfter.IsZero() {
@@ -311,10 +312,10 @@ func generateToken(typ int, sub string, sans []string, kid, iss, aud, root strin
 		if notAfter.IsZero() {
 			notAfter = notBefore.Add(token.DefaultValidity)
 		}
-		tokOptions = append(tokOptions, token.WithValidity(notBefore, notAfter))
+		tokOps = append(tokOps, token.WithValidity(notBefore, notAfter))
 	}
 
-	tok, err := provision.New(sub, tokOptions...)
+	tok, err := provision.New(sub, tokOps...)
 	if err != nil {
 		return "", err
 	}
@@ -341,6 +342,39 @@ func newTokenFlow(ctx *cli.Context, typ int, subject string, sans []string, caUR
 	}
 
 	switch p := p.(type) {
+	case *provisioner.X5C: // Create an X5C token
+		var certFile, keyFile string
+		if certFile = ctx.String("x5c-cert"); len(certFile) == 0 {
+			certFile, err = ui.Prompt("Please enter the certificate file you would like appended to the token")
+			if err != nil {
+				return "", errors.Wrap(err, "error reading x5c-cert prompt")
+			}
+		}
+		if keyFile = ctx.String("x5c-key"); len(keyFile) == 0 {
+			keyFile, err = ui.Prompt("Please enter the private key file (corresponding to the certificate in the token) that will be used to sign the token")
+			if err != nil {
+				return "", errors.Wrap(err, "error reading x5c-key prompt")
+			}
+		}
+		var options []jose.Option
+		if passwordFile := ctx.String("password-file"); len(passwordFile) > 0 {
+			options = append(options, jose.WithPasswordFile(passwordFile))
+		}
+
+		jwk, err := jose.ParseKey(keyFile, options...)
+		if err != nil {
+			return "", errors.Wrap(err, "error parsing x5c key file")
+		}
+		fp, err := jwk.Thumbprint(crypto.SHA256)
+		if err != nil {
+			return "", errors.Wrap(err, "error generating jwk thumbprint for x5c token")
+		}
+		jwk.KeyID = string(hex.EncodeToString(fp))
+
+		audience = fmt.Sprintf("%s#%s", audience, p.Name)
+
+		return generateToken(typ, subject, sans, jwk.KeyID, p.Name, audience, root,
+			notBefore, notAfter, jwk, token.WithX5CFile(certFile))
 	case *provisioner.OIDC: // Run step oauth
 		args := []string{"oauth", "--oidc", "--bare",
 			"--provider", p.ConfigurationEndpoint,
@@ -493,7 +527,7 @@ func provisionerPrompt(ctx *cli.Context, provisioners provisioner.List) (provisi
 	// Filter by type
 	provisioners = provisionerFilter(provisioners, func(p provisioner.Interface) bool {
 		switch p.GetType() {
-		case provisioner.TypeJWK, provisioner.TypeOIDC:
+		case provisioner.TypeJWK, provisioner.TypeX5C, provisioner.TypeOIDC:
 			return true
 		case provisioner.TypeGCP, provisioner.TypeAWS, provisioner.TypeAzure:
 			return true
@@ -540,6 +574,11 @@ func provisionerPrompt(ctx *cli.Context, provisioners provisioner.List) (provisi
 		case *provisioner.JWK:
 			items = append(items, &provisionersSelect{
 				Name:        fmt.Sprintf("%s (%s) [kid: %s]", p.Name, p.GetType(), p.Key.KeyID),
+				Provisioner: p,
+			})
+		case *provisioner.X5C:
+			items = append(items, &provisionersSelect{
+				Name:        fmt.Sprintf("%s (%s)", p.Name, p.GetType()),
 				Provisioner: p,
 			})
 		case *provisioner.OIDC:
