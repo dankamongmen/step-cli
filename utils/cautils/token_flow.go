@@ -65,6 +65,17 @@ func parseAudience(ctx *cli.Context, tokType int) (string, error) {
 	}
 }
 
+// ErrACMEToken is the error type returned when the user attempts a Token Flow
+// while using an ACME provisioner.
+type ErrACMEToken struct {
+	ID string
+}
+
+// Error implements the error interface.
+func (e *ErrACMEToken) Error() string {
+	return "step ACME provisioners do not support token auth flows"
+}
+
 // NewTokenFlow implements the common flow used to generate a token
 func NewTokenFlow(ctx *cli.Context, typ int, subject string, sans []string, caURL, root string, notBefore, notAfter time.Time, certNotBefore, certNotAfter provisioner.TimeDuration) (string, error) {
 	// Get audience from ca-url

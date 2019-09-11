@@ -2,7 +2,6 @@ package ca
 
 import (
 	"crypto/x509"
-	"encoding/pem"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -13,7 +12,6 @@ import (
 	"github.com/smallstep/cli/flags"
 	"github.com/smallstep/cli/token"
 	"github.com/smallstep/cli/ui"
-	"github.com/smallstep/cli/utils"
 	"github.com/smallstep/cli/utils/cautils"
 	"github.com/urfave/cli"
 )
@@ -167,17 +165,17 @@ func signCertificateAction(ctx *cli.Context) error {
 		return err
 	}
 
-	if len(token) == 0 {
+	if len(tok) == 0 {
 		// Use the ACME protocol with a different certificate authority.
 		if ctx.IsSet("acme") {
-			return acmeSignCSRFlow(ctx, csr, crtFile, "")
+			return cautils.ACMESignCSRFlow(ctx, csr, crtFile, "")
 		}
 		sans := mergeSans(ctx, csr)
 		if tok, err = flow.GenerateToken(ctx, csr.Subject.CommonName, sans); err != nil {
 			switch k := err.(type) {
 			// Use the ACME flow with the step certificate authority.
-			case *errACMEToken:
-				return acmeSignCSRFlow(ctx, csr, crtFile, k.id)
+			case *cautils.ErrACMEToken:
+				return cautils.ACMESignCSRFlow(ctx, csr, crtFile, k.ID)
 			default:
 				return err
 			}
@@ -237,35 +235,4 @@ func mergeSans(ctx *cli.Context, csr *x509.CertificateRequest) []string {
 		}
 	}
 	return uniq
-}
-
-func writeCert(chain []*x509.Certificate, certFile string) error {
-	var certBytes = []byte{}
-	for _, c := range chain {
-		certBytes = append(certBytes, pem.EncodeToMemory(&pem.Block{
-			Type:  "CERTIFICATE",
-			Bytes: c.Raw,
-		})...)
-	}
-
-	if err := utils.WriteFile(certFile, certBytes, 0600); err != nil {
-		return errs.FileError(err, certFile)
-	}
-	return nil
-}
-
-func acmeSignCSRFlow(ctx *cli.Context, csr *x509.CertificateRequest, certFile, provisionerID string) error {
-	af, err := newACMEFlow(ctx, withCSR(csr), withProvisionerID(provisionerID))
-	if err != nil {
-		return err
-	}
-	certs, err := af.GetCertificate()
-	if err != nil {
-		return err
-	}
-	if err = writeCert(certs, certFile); err != nil {
-		return err
-	}
-	ui.PrintSelected("Certificate", certFile)
-	return nil
 }

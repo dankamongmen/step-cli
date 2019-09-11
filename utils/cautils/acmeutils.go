@@ -1,4 +1,4 @@
-package ca
+package cautils
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/smallstep/cli/errs"
 	"github.com/smallstep/cli/jose"
 	"github.com/smallstep/cli/ui"
+	"github.com/smallstep/cli/utils"
 	"github.com/urfave/cli"
 )
 
@@ -265,9 +267,9 @@ func finalizeOrder(ac *ca.ACMEClient, o *acme.Order, csr *x509.CertificateReques
 }
 
 func validateSANsForACME(sans []string) ([]string, error) {
-	dnsNames, ips := splitSANs(sans)
-	if len(ips) > 0 {
-		return nil, errors.New("IP Address SANs are not supported for ACME flow")
+	dnsNames, ips, emails := splitSANs(sans)
+	if len(ips) > 0 || len(emails) > 0 {
+		return nil, errors.New("IP Address and Email Address SANs are not supported for ACME flow")
 	}
 	for _, dns := range dnsNames {
 		if strings.Contains(dns, "*") {
@@ -480,4 +482,19 @@ func (af *acmeFlow) GetCertificate() ([]*x509.Certificate, error) {
 		return nil, errors.Wrapf(err, "error getting certificate")
 	}
 	return append([]*x509.Certificate{leaf}, chain...), nil
+}
+
+func writeCert(chain []*x509.Certificate, certFile string) error {
+	var certBytes = []byte{}
+	for _, c := range chain {
+		certBytes = append(certBytes, pem.EncodeToMemory(&pem.Block{
+			Type:  "CERTIFICATE",
+			Bytes: c.Raw,
+		})...)
+	}
+
+	if err := utils.WriteFile(certFile, certBytes, 0600); err != nil {
+		return errs.FileError(err, certFile)
+	}
+	return nil
 }
