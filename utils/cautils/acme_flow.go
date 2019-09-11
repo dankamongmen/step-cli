@@ -10,13 +10,13 @@ import (
 )
 
 // ACMECreateCertFlow performs an ACME transaction to get a new certificate.
-func ACMECreateCertFlow(ctx *cli.Context, provisionerID string) error {
+func ACMECreateCertFlow(ctx *cli.Context, provisionerName string) error {
 	args := ctx.Args()
 	subject := args.Get(0)
 	certFile, keyFile := args.Get(1), args.Get(2)
 
 	af, err := newACMEFlow(ctx, withSubjectSANs(subject, ctx.StringSlice("san")),
-		withProvisionerID(provisionerID))
+		withProvisionerName(provisionerName))
 	if err != nil {
 		return err
 	}
@@ -39,8 +39,8 @@ func ACMECreateCertFlow(ctx *cli.Context, provisionerID string) error {
 
 // ACMESignCSRFlow performs an ACME transaction using an existing CSR to get a
 // new certificate.
-func ACMESignCSRFlow(ctx *cli.Context, csr *x509.CertificateRequest, certFile, provisionerID string) error {
-	af, err := newACMEFlow(ctx, withCSR(csr), withProvisionerID(provisionerID))
+func ACMESignCSRFlow(ctx *cli.Context, csr *x509.CertificateRequest, certFile, provisionerName string) error {
+	af, err := newACMEFlow(ctx, withCSR(csr), withProvisionerName(provisionerName))
 	if err != nil {
 		return err
 	}

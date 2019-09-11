@@ -68,7 +68,7 @@ func parseAudience(ctx *cli.Context, tokType int) (string, error) {
 // ErrACMEToken is the error type returned when the user attempts a Token Flow
 // while using an ACME provisioner.
 type ErrACMEToken struct {
-	ID string
+	Name string
 }
 
 // Error implements the error interface.
@@ -116,6 +116,8 @@ func NewTokenFlow(ctx *cli.Context, typ int, subject string, sans []string, caUR
 	case *provisioner.Azure: // Do the identity request to get the token
 		sharedContext.DisableCustomSANs = p.DisableCustomSANs
 		return p.GetIdentityToken(subject, caURL)
+	case *provisioner.ACME: // Return an error with the provisioner ID
+		return "", &ErrACMEToken{p.GetName()}
 	}
 
 	// JWK provisioner
@@ -265,7 +267,7 @@ func provisionerPrompt(ctx *cli.Context, provisioners provisioner.List) (provisi
 	// Filter by type
 	provisioners = provisionerFilter(provisioners, func(p provisioner.Interface) bool {
 		switch p.GetType() {
-		case provisioner.TypeJWK, provisioner.TypeOIDC:
+		case provisioner.TypeJWK, provisioner.TypeOIDC, provisioner.TypeACME:
 			return true
 		case provisioner.TypeGCP, provisioner.TypeAWS, provisioner.TypeAzure:
 			return true
@@ -332,6 +334,11 @@ func provisionerPrompt(ctx *cli.Context, provisioners provisioner.List) (provisi
 		case *provisioner.Azure:
 			items = append(items, &provisionersSelect{
 				Name:        fmt.Sprintf("%s (%s) [tenant: %s]", p.Name, p.GetType(), p.TenantID),
+				Provisioner: p,
+			})
+		case *provisioner.ACME:
+			items = append(items, &provisionersSelect{
+				Name:        fmt.Sprintf("%s (%s)", p.Name, p.GetType()),
 				Provisioner: p,
 			})
 		default:

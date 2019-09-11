@@ -216,7 +216,7 @@ func certificateAction(ctx *cli.Context) error {
 			switch k := err.(type) {
 			// Use the ACME flow with the step certificate authority.
 			case *cautils.ErrACMEToken:
-				return cautils.ACMECreateCertFlow(ctx, k.ID)
+				return cautils.ACMECreateCertFlow(ctx, k.Name)
 			default:
 				return err
 			}

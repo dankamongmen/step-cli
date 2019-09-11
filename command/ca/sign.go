@@ -175,7 +175,7 @@ func signCertificateAction(ctx *cli.Context) error {
 			switch k := err.(type) {
 			// Use the ACME flow with the step certificate authority.
 			case *cautils.ErrACMEToken:
-				return cautils.ACMESignCSRFlow(ctx, csr, crtFile, k.ID)
+				return cautils.ACMESignCSRFlow(ctx, csr, crtFile, k.Name)
 			default:
 				return err
 			}

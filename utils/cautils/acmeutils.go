@@ -282,9 +282,9 @@ func validateSANsForACME(sans []string) ([]string, error) {
 
 type acmeFlowOp func(*acmeFlow) error
 
-func withProvisionerID(pid string) acmeFlowOp {
+func withProvisionerName(name string) acmeFlowOp {
 	return func(af *acmeFlow) error {
-		af.provisionerID = pid
+		af.provisionerName = name
 		return nil
 	}
 }
@@ -294,10 +294,6 @@ func withCSR(csr *x509.CertificateRequest) acmeFlowOp {
 		af.csr = csr
 		af.subject = csr.Subject.CommonName
 		af.sans = csr.DNSNames
-		if len(af.sans) == 0 {
-			af.sans = []string{af.subject}
-		}
-
 		return nil
 	}
 }
@@ -311,13 +307,13 @@ func withSubjectSANs(sub string, sans []string) acmeFlowOp {
 }
 
 type acmeFlow struct {
-	ctx           *cli.Context
-	provisionerID string
-	csr           *x509.CertificateRequest
-	pub, priv     interface{}
-	subject       string
-	sans          []string
-	acmeDir       string
+	ctx             *cli.Context
+	provisionerName string
+	csr             *x509.CertificateRequest
+	priv            interface{}
+	subject         string
+	sans            []string
+	acmeDir         string
 }
 
 func newACMEFlow(ctx *cli.Context, ops ...acmeFlowOp) (*acmeFlow, error) {
@@ -342,6 +338,9 @@ func newACMEFlow(ctx *cli.Context, ops ...acmeFlowOp) (*acmeFlow, error) {
 			return nil, err
 		}
 	}
+	if len(af.sans) == 0 {
+		af.sans = []string{af.subject}
+	}
 
 	af.ctx = ctx
 
@@ -351,10 +350,10 @@ func newACMEFlow(ctx *cli.Context, ops ...acmeFlowOp) (*acmeFlow, error) {
 		if len(caURL) == 0 {
 			return nil, errs.RequiredFlag(ctx, "ca-url")
 		}
-		if len(af.provisionerID) == 0 {
+		if len(af.provisionerName) == 0 {
 			return nil, errors.New("acme flow expected provisioner ID")
 		}
-		af.acmeDir = fmt.Sprintf("%s/acme/%s/directory", caURL, af.provisionerID)
+		af.acmeDir = fmt.Sprintf("%s/acme/%s/directory", caURL, af.provisionerName)
 	}
 
 	return af, nil
