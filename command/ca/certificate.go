@@ -76,7 +76,6 @@ Request a new certificate using an OIDC provisioner:
 $ step ca certificate --token $(step oauth --oidc --bare) joe@example.com joe.crt joe.key
 '''
 
-<<<<<<< HEAD
 Request a new certificate using an OIDC provisioner while remaining in the console:
 '''
 $ step ca certificate joe@example.com joe.crt joe.key --issuer Google --console
@@ -85,20 +84,16 @@ $ step ca certificate joe@example.com joe.crt joe.key --issuer Google --console
 Request a new certificate with an RSA public key (default is ECDSA256):
 '''
 $ step ca certificate foo.internal foo.crt foo.key --kty RSA --size 4096
-=======
+'''
+
 **step CA ACME** - In order to use the step CA ACME protocol you must add a
 ACME provisioner to the step CA config. See **step ca provisioner add -h**.
->>>>>>> wip
 
 Request a new certificate using the step CA ACME server and a standalone server
 to serve the challenges locally (standalone mode is the default):
 '''
-<<<<<<< HEAD
-$ step ca certificate foobar foo.crt foo.key --acme --san foo.internal --san bar.internal
-=======
 $ step ca certificate foobar foo.crt foo.key --provisioner my-acme-provisioner --san foo.internal --san bar.internal
 '''
->>>>>>> wip
 
 Request a new certificate using the step CA ACME server and an existing server
 along with webroot mode to serve the challenges locally:
